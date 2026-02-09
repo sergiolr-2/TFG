@@ -63,6 +63,9 @@ int templ_num=0,**templ; // to templ means rho
 FILE *fp2,*fp4,*fp5;
 int mnr,mnc,num_bicluster=0;
 
+//----------------------------
+// Convierte un int a su representación en string según una base
+
 char* itxoa(int value, char* buffer, int base)
 {
 	int n,i,r,j,k=0;
@@ -225,6 +228,7 @@ int main(int argc, char **argv)
 }
 
 //-------------------------------
+// RUBIC function: executes the biclustering algorithm
 
 void RUBIC()
 {
@@ -272,6 +276,7 @@ void RUBIC()
 }
 
 //------------------------
+// Not used in the code
 
 int New_templateFound(char *t)
 {
@@ -299,6 +304,7 @@ int New_templateFound(char *t)
 
 //----------------------------
 //----------------------------
+// Determine wether the template stored in t was or not previously found searching the correspondent columns in fp4 
 
 int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 {
@@ -339,7 +345,7 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 			found=0;
 
 			strcpy(s2," ");
-			itxoa(pattern.bcc[0].column_number[k]+1,s1,10);
+			itxoa(pattern.bcc[0].column_number[k]+1,s1,10); //convert column number into base 10 string representation
 			strcat(s1," ");
 			strcat(s2,s1);
 
@@ -363,6 +369,8 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 	return(0); // found false  template not found and got new template
 }
 //----------------------------
+// Determines if the min nº of nonzero columns is sattisfied in the template
+
 int mncRequirement(int *t)
 {
 	int i,j,k,found,found_component;
@@ -384,6 +392,7 @@ int mncRequirement(int *t)
 	}
 }
 //---------------------------
+// Not called in the code
 
 int templateFound(int *t)
 {
@@ -440,6 +449,7 @@ int templateFound(int *t)
 }
 
 //----------------
+// Look for rows having the same pattern as r and j
 
 int search(int r,int j,int *t) //
 {
@@ -516,7 +526,9 @@ int search(int r,int j,int *t) //
 }
 
 //------------------
-
+// Stores bicluster inside file fp2 and fp4
+// NOTE: fp2 will store both rows, cols and full information about biclusters. 
+// fp4 is used merely to check wether a template o columns has been already included
 
 void printBicluster()
 { int i,j;
@@ -544,6 +556,7 @@ void printBicluster()
 }
 
 //-----------------
+// Checks wether or not value t belongs to the set Vx by searching in the v[x].set array
 
 int binarySearch(int x,int t)
 {
@@ -587,7 +600,7 @@ int binarySearch(int x,int t)
 
 
 //--------------------------
-
+// Similar to PatternConversionDecimalToBinary
 
 void New_patternConversionDecimalToBinary(int *t,struct bicluster *pattern) // pattern.col store only those column number which corresponds to 1.
 {																		// pattern.col_total will store total number of column having 1 not 0.
@@ -613,6 +626,7 @@ void New_patternConversionDecimalToBinary(int *t,struct bicluster *pattern) // p
 }
 
 //-----------------
+//Takes the template in decimal, convertis it to binary and stores it in the bicluster set
 
 void patternConversionDecimalToBinary(int *t,struct bicluster *pattern) // pattern.col store only those column number which corresponds to 1.
 {																		// pattern.col_total will store total number of column having 1 not 0.
@@ -648,6 +662,7 @@ void patternConversionDecimalToBinary(int *t,struct bicluster *pattern) // patte
 }
 
 //--------------------
+// Converts the values of a template in binary format and stores the original column numbers of the binary matrix in the bicluster set
 
 void decimalTobinary_fromTemplate(int *t)
 {
@@ -680,6 +695,7 @@ void decimalTobinary_fromTemplate(int *t)
 }
 
 //---------------
+//Not used in the code
 
 void decimalTobinary(struct bicluster_component *b)
 {
@@ -705,6 +721,7 @@ void decimalTobinary(struct bicluster_component *b)
 }
 
 //------------------
+// Used in main to represent a sequence of 4 consecutive bits of matrix as a decimal value inside of the row_groups
 
 int binaryTodecimal(int r, int j)
 {
@@ -719,6 +736,7 @@ int binaryTodecimal(int r, int j)
 }
 
 //---------------------
+// Initialize the 16 sets defined in the documentation as Di
 
 void initializeSet()
 {
@@ -853,4 +871,3 @@ void initializeSet()
 
 
 }
-
