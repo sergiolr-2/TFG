@@ -64,7 +64,7 @@ FILE *fp2,*fp4,*fp5;
 int mnr,mnc,num_bicluster=0;
 
 //----------------------------
-// Convierte un int a su representación en string según una base
+// Converts one int to string format according to a base
 
 char* itxoa(int value, char* buffer, int base)
 {

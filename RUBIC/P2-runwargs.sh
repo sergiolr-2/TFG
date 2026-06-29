@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Check if at least 6 arguments are provided (program name + 5 arguments)
-if [ "$#" -lt 8 ]; then
+if [ "$#" -lt 6 ]; then
     echo "Usage: $0 <executable_file> <input_file> <output_file> <mnr> <mnc> <thr> <rk> <ck>"
     exit 1
 fi
