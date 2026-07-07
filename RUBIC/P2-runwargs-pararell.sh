@@ -27,5 +27,5 @@ if [ ! -x "$program_name" ]; then
     exit 1
 fi
 
-# Execute the program with the remaining arguments
-"$program_name" "$@"
+# Execute the program with the remaining arguments (4 processes)
+mpirun -n 4 "$program_name" "$@"
