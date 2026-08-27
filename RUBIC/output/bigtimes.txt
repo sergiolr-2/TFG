@@ -1,0 +1,4 @@
+1 - Total time is 31350 millisecs
+2 - Total time is 19335 millisecs
+3 - Total time is 18849 millisecs
+4 - Total time is 19579 millisecs

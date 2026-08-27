@@ -26,10 +26,14 @@ struct cluster{ // A bicluster is made of some rows and some col
 };
 
 struct bicluster_component{ // Each member of bicluster is of this type....
-	int *row_number;
-	int *column_number;
+	int rank;
+	int discarded; // 0 or 1. Used for "lazy deleting"
+	int row_pair1; // Tuple of rows that generated this cluster
+	int row_pair2;
 	int row_total;
 	int col_total;
+	int *row_number;
+	int *column_number;
 };
 
 struct bicluster{   // bicluster that we can found....
@@ -65,6 +69,224 @@ int templ_num=0,**templ; // to templ means rho
 FILE *fp2,*fp4,*fp5;
 int mnr,mnc,num_bicluster=0;
 int nprocs, rank; // MPI related variables
+
+
+//----------------------------
+// Makes process 0 receive all the clusters found
+void gather_resuls(){
+	// All processes flatten their clusters into one buffer.
+	int local_bytes = 0;
+
+	for (int i = 0; i < bc.total_bicluster; i++){
+		local_bytes += sizeof(int) * (6 + bc.bcc[i].row_total + bc.bcc[i].col_total);
+	}
+
+	unsigned char* local_buffer = (unsigned char*) malloc(local_bytes);
+	unsigned char* ptr = local_buffer;
+
+	for (int i = 0; i < bc.total_bicluster; i++){
+		// Single integers
+		memcpy(ptr, &bc.bcc[i].rank, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(ptr, &bc.bcc[i].discarded, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(ptr, &bc.bcc[i].row_pair1, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(ptr, &bc.bcc[i].row_pair2, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(ptr, &bc.bcc[i].row_total, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(ptr, &bc.bcc[i].col_total, sizeof(int));
+		ptr += sizeof(int);
+		// Arrays
+		memcpy(ptr, bc.bcc[i].row_number, bc.bcc[i].row_total * sizeof(int));
+		ptr += bc.bcc[i].row_total * sizeof(int);
+		memcpy(ptr, bc.bcc[i].column_number, bc.bcc[i].col_total * sizeof(int));
+		ptr += bc.bcc[i].col_total * sizeof(int);
+	}
+
+	// Process 0 obtains how many clusters each process will send and calculates the offsets betweeen each processes' buffer
+	int* recv_bytes;
+	int* offsets;
+	unsigned char* global_buffer;
+	int total_bytes = 0;
+
+	if (rank == 0)
+		recv_bytes = (int*) malloc(nprocs * sizeof(int));
+
+	MPI_Gather(&local_bytes, 1, MPI_INT, recv_bytes, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+	if (rank == 0){
+		offsets = (int*) malloc(nprocs * sizeof(int));
+		for (int i = 0; i < nprocs; i++){
+			offsets[i] = total_bytes;
+			total_bytes += recv_bytes[i];
+		}
+		
+		global_buffer = (unsigned char*) malloc(total_bytes);
+		ptr = global_buffer;
+	}
+
+	// All processes send their buffer to process 0
+	MPI_Gatherv(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, 0, MPI_COMM_WORLD);
+
+	// Get total number of biclusters (structs) received
+	if (rank == 0)
+		MPI_Reduce(MPI_IN_PLACE, &num_bicluster, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD); 
+	else 
+		MPI_Reduce(&num_bicluster, NULL, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+	// Process 0 frees its previous bc structure and replaces it by the deserialized global buffer
+	if (rank == 0){
+		for (int i = 0; i < bc.total_bicluster; i++){
+			free(bc.bcc[i].row_number);
+			free(bc.bcc[i].column_number);
+		}
+		free(bc.bcc);
+
+		bc.total_bicluster = num_bicluster;
+		bc.bcc = (struct bicluster_component*) calloc(bc.total_bicluster, sizeof(struct bicluster_component));
+
+		for (int i = 0; i < bc.total_bicluster; i++){
+			//Single integers
+			memcpy(&bc.bcc[i].rank, ptr, sizeof(int));
+			ptr += sizeof(int);
+			memcpy(&bc.bcc[i].discarded, ptr, sizeof(int));
+			ptr += sizeof(int);
+			memcpy(&bc.bcc[i].row_pair1, ptr, sizeof(int));
+			ptr += sizeof(int);
+			memcpy(&bc.bcc[i].row_pair2, ptr, sizeof(int));
+			ptr += sizeof(int);
+			memcpy(&bc.bcc[i].row_total, ptr, sizeof(int));
+			ptr += sizeof(int);
+			memcpy(&bc.bcc[i].col_total, ptr, sizeof(int));
+			ptr += sizeof(int);
+
+			//Arrays
+			bc.bcc[i].row_number = (int*) calloc(bc.bcc[i].row_total, sizeof(int));
+			bc.bcc[i].column_number = (int*) calloc(bc.bcc[i].col_total, sizeof(int));
+
+			memcpy(bc.bcc[i].row_number, ptr, bc.bcc[i].row_total * sizeof(int));
+			ptr += bc.bcc[i].row_total * sizeof(int);
+			memcpy(bc.bcc[i].column_number, ptr, bc.bcc[i].col_total * sizeof(int));
+			ptr += bc.bcc[i].col_total * sizeof(int);
+		}
+		// puts("Final result:");
+		// for (int i = 0; i< bc.total_bicluster; i++){
+		// 	printf("%d - rank=%d - discarded=%d - row_pair1=%d - row_pair2=%d - row_total=%d - col_total=%d\n",i, bc.bcc[i].rank, bc.bcc[i].discarded, bc.bcc[i].row_pair1, bc.bcc[i].row_pair2,bc.bcc[i].row_total, bc.bcc[i].col_total);
+		// 	printf("r :");
+		// 	for (int j = 0; j < bc.bcc[i].row_total; j++) printf("%d ", bc.bcc[i].row_number[j]);
+		// 	printf("\nc :");
+		// 	for (int j = 0; j < bc.bcc[i].col_total; j++) printf("%d ", bc.bcc[i].column_number[j]);
+		// 	printf("\n");
+		// }
+	}
+
+	// Free memory
+	free(local_buffer);
+	if (rank == 0){
+		free(global_buffer);
+		free(recv_bytes);
+		free(offsets);
+	}
+
+}
+
+//----------------------------
+// Auxiliariy function for qsort to sort the bc struct according to the order in which each bicluster would appear in the original code (sequential)
+int sequential_order(const void *a, const void *b){
+	const struct bicluster_component* c1 = (const struct bicluster_component*) a;
+	const struct bicluster_component* c2 = (const struct bicluster_component*) b;
+
+	if (c1->row_pair1 != c2->row_pair1)
+		return c1->row_pair1 - c2->row_pair1;
+	else 
+		return c1->row_pair2 - c2->row_pair2;
+}
+
+//----------------------------
+// Algorithm that makes process 0 discard those clusters that wouldn't appear in the original code (sequential)
+void discard_clusters(){
+	if (nprocs == 1) return;
+
+	int i, j, k, t, curr_div, last_div, tsize, found_component;
+	// bc.bcc[i] represents the template that would enter templateFoundInFile
+	// bc.bcc[j] represents a template that would hypothetically appear in fp4
+
+	//First we have to sort the whole structure to make sure we follow the same order as in the sequential code
+	//Not fulfilling this may cause to discard some cluster due to another cluster that will also be discarded but hasn't yet
+
+	qsort(bc.bcc, bc.total_bicluster, sizeof(struct bicluster_component), sequential_order);
+
+	// Now we start the discarding process
+	for (i = 0; i < bc.total_bicluster; i++){
+		for (j = 0; j < i; j++){
+			// Skip if clusters were generated by the same process or if the "template" cluster has been discarded
+			if (bc.bcc[i].rank == bc.bcc[j].rank || bc.bcc[j].discarded) 
+				continue;
+			// if (bc.bcc[i].row_pair1 < bc.bcc[j].row_pair1)
+			// 	continue;
+			// // This condition should never happen as each process will have every combination of row pairs given a row_pair1
+			// else if (bc.bcc[i].row_pair1 == bc.bcc[j].row_pair1 && bc.bcc[i].row_pair2 < bc.bcc[j].row_pair2)
+			// 	continue;
+
+			// Obtain tsize considering the template (columns) in hexadecimal
+			// Since a group of rows that give the same division by 4 would be part of the same
+			// digit and the rows in bc.bcc[i].column_number are ordered, we can use this approach
+			tsize = 0;
+			last_div = -1;
+			for (k = 0; k < bc.bcc[i].col_total; k++){
+				curr_div = bc.bcc[i].column_number[k] / 4;
+				if (curr_div != last_div){
+					tsize++;
+					last_div = curr_div;
+				}
+			}
+
+			// Mimic templateFoundInFiles's behaviour
+			found_component = 0;
+			for (k = 0; k < bc.bcc[i].col_total; k++){
+				for (t = 0; t < bc.bcc[j].col_total; t++){
+					if (bc.bcc[i].column_number[k] == bc.bcc[j].column_number[t]){
+						found_component++;
+						break;
+					}
+				}
+			}
+
+			// Lazy disarding
+			if (found_component == tsize){
+				printf("Discarded template: ");
+				for (int z = 0; z < bc.bcc[i].col_total; z++) printf("%d ",bc.bcc[i].column_number[z]);
+				printf("\n");
+				bc.bcc[i].discarded = 1;
+			}
+
+		}
+	}
+}
+
+// Does what printBicluster did before but now having all the biclusters, instead of going one at a time
+void print_final_biclusters(){
+	int i,j,id;
+	id = 1;
+	for (i = 0; i < bc.total_bicluster; i++){
+		if (bc.bcc[i].discarded)
+			continue;
+
+		fprintf(fp2,"\n bc#: %d",id++);
+		fprintf(fp2,"\n c: ");
+		for (j = 0; j < bc.bcc[i].col_total; j++){
+			fprintf(fp2, "%d ", bc.bcc[i].column_number[j]+1);
+		}
+		fprintf(fp2, "\n r: ");
+		for (j = 0; j < bc.bcc[i].row_total; j++){
+			fprintf(fp2, "%d ", bc.bcc[i].row_number[j]+1);
+		}
+		fprintf(fp2,"\n Total col=%d, Total row=%d",bc.bcc[i].col_total,bc.bcc[i].row_total);
+	}
+}
+
 
 //----------------------------
 // Converts one int to string format according to a base
@@ -121,29 +343,16 @@ int main(int argc, char **argv)
 	int difftm,ccnt;// ccnt and rcnt stands for no. fo clumn and no. of row which are 1
 	float a,threshold;
 	int max_num_bicluster,extra_col=0;
-	char fp4_name[25], fp5_name[25]; // One file per process (fp4 for templates, fp5 for biclusters)
+	char fp4_name[25]; // One file per process for templates
 
 	// Each process gets a separate file for storing its biclusters and templates
-	sprintf(fp4_name, "./op_template-%d",rank);
+	sprintf(fp4_name, "./op_template-%d.txt",rank);
 	fp4=fopen(fp4_name,"w+");
 	if (fp4 == NULL)
 		printf("Problem in opening template file at process %d\n", rank);
 
-	sprintf(fp5_name, "%s-%d", argv[2],rank);
-	fp5=fopen(fp5_name,"w");
-	if (fp5 == NULL)
-		printf("Problem in opening biclusters file at process %d\n", rank);
-
-	// Initialization and opening/creation of files made by process 0 
+	// Files managed by process 0 
 	if (rank == 0){
-
-		fp1=fopen(argv[1],"r"); //Last one
-	
-		if(fp1==NULL)
-			puts("Problem in opening input file");
-		else
-			puts("OK for opening new_input file");
-	
 		fp2=fopen(argv[2],"w"); // Last one
 	
 		if(fp2==NULL)
@@ -159,115 +368,124 @@ int main(int argc, char **argv)
 			puts("Problem in opening fp3 output file");
 		else
 			puts("OK for opening fp3 output file");
-			
-		mnr=atoi(argv[3]);
-		mnc=atoi(argv[4]);
+	}	
+
+	// Input parameters and file used by all processes
+	fp1=fopen(argv[1],"r"); //Last one
+
+	if(fp1==NULL)
+		printf("Problem in opening input file at process %d\n", rank);
+	else
+		printf("OK for opening new_input file by process %d\n",rank);
+
+	mnr=atoi(argv[3]);
+	mnc=atoi(argv[4]);
+
+	clst.rsize=0;
+	while(fgets(s,1000000,fp1))
+		clst.rsize++;
+
+	clst.csize=0;
+	for(i=0;i<strlen(s);i++)
+		if(s[i]==',')
+			clst.csize++;
+	clst.csize++;// one commma means 2 column and so so
+
+	extra_col=(clst.csize%4==0)? 0: (4-(clst.csize%4)); // to manage column size as multiple of 4
+	// printf("\n clst.rsize=%d, csize=%d",clst.rsize,clst.csize);
+	clst.csize+=extra_col; // to manage column size as multiple of 4
+	//printf("\n modified csize=%d",clst.csize);
 	
-		clst.rsize=0;
-		while(fgets(s,1000000,fp1))
-			clst.rsize++;
-	
-		clst.csize=0;
-		for(i=0;i<strlen(s);i++)
-			if(s[i]==',')
-				clst.csize++;
-		clst.csize++;// one commma means 2 column and so so
-	
-		extra_col=(clst.csize%4==0)? 0: (4-(clst.csize%4)); // to manage column size as multiple of 4
-		printf("\n clst.rsize=%d, csize=%d, extra_column=%d",clst.rsize,clst.csize,extra_col);
-		clst.csize+=extra_col; // to manage column size as multiple of 4
-		//printf("\n modified csize=%d",clst.csize);
-		
-		clst.matrix=(int **)calloc(clst.rsize,sizeof(int *));
-		for(i=0;i<clst.rsize;i++)
-			clst.matrix[i]=(int *)calloc(clst.csize,sizeof(int ));
-	
-		i=0;
-		rewind(fp1);
-	
-		threshold=atof(argv[5]); //Last One
-		//printf("\n::: threshold=%f\n",threshold);
-		printf("\n::: mnr=%d\n",mnr);
-		printf("\n::: mnc=%d\n",mnc);
-		
-		while(fgets(s,1000000,fp1))
-		{
-				j=0;
-				s2=strtok(s,",");
-				a=atof(s2);
-				
-				if(a<threshold)
-				{	clst.matrix[i][j]=0; }
-				else
-				{  clst.matrix[i][j]=1;	}
-	
-				while((s2=strtok(NULL,","))!=NULL && ++j<clst.csize)
-				{
-				  a=atof(s2);
-				  if(a<threshold)
-				  {	clst.matrix[i][j]=0;}
-				  else
-				  { clst.matrix[i][j]=1;}
-				}
-				while(j<clst.csize) // to fill the remaining column(extra column) with zero
-				{ clst.matrix[i][++j]=0;}
-			i++;
-		}
-		clst.rw=(struct row *)calloc(clst.rsize,sizeof(struct row )); // it will represent each row but with column size=col/4
-		clst.row_col=clst.csize/4;
-		for(i=0;i<clst.rsize;i++)
-		{
-			clst.rw[i].rg=(struct row_group *)calloc(clst.row_col,sizeof(struct row_group)); // it will represent each row but with column size=col/4
-			// So rg have row_col number of columns Each column represent 4bit decimal number
-			for(j=0;j<clst.row_col;j++)
-			{
-				clst.rw[i].rg[j].value=binaryTodecimal(i,j);//clst.matrix[i][4*j],// indivisual column of rw gets its decimal col value
-			}
-		}
-		
+	clst.matrix=(int **)calloc(clst.rsize,sizeof(int *));
+	for(i=0;i<clst.rsize;i++)
+		clst.matrix[i]=(int *)calloc(clst.csize,sizeof(int ));
+
+	i=0;
+	rewind(fp1);
+
+	threshold=atof(argv[5]); //Last One
+	//printf("\n::: threshold=%f\n",threshold);
+	if (rank == 0){
+	printf("\n::: mnr=%d\n",mnr);
+	printf("\n::: mnc=%d\n",mnc);
 	}
 
-	// Bicluster bc and sets v initialization by all processes
-	max_num_bicluster=2;//(clst.rsize*(clst.rsize-1)/2 +1);
+	while(fgets(s,1000000,fp1))
+	{
+			j=0;
+			s2=strtok(s,",");
+			a=atof(s2);
+			
+			if(a<threshold)
+			{	clst.matrix[i][j]=0; }
+			else
+			{  clst.matrix[i][j]=1;	}
+
+			while((s2=strtok(NULL,","))!=NULL && ++j<clst.csize)
+			{
+				a=atof(s2);
+				if(a<threshold)
+				{	clst.matrix[i][j]=0;}
+				else
+				{ clst.matrix[i][j]=1;}
+			}
+			while(j<clst.csize) // to fill the remaining column(extra column) with zero
+			{ clst.matrix[i][++j]=0;}
+		i++;
+	}
+	clst.rw=(struct row *)calloc(clst.rsize,sizeof(struct row )); // it will represent each row but with column size=col/4
+	clst.row_col=clst.csize/4;
+	for(i=0;i<clst.rsize;i++)
+	{
+		clst.rw[i].rg=(struct row_group *)calloc(clst.row_col,sizeof(struct row_group)); // it will represent each row but with column size=col/4
+		// So rg have row_col number of columns Each column represent 4bit decimal number
+		for(j=0;j<clst.row_col;j++)
+		{
+			clst.rw[i].rg[j].value=binaryTodecimal(i,j);//clst.matrix[i][4*j],// indivisual column of rw gets its decimal col value
+		}
+	}
+
+	// Bicluster bc and sets v initialization
+	max_num_bicluster= clst.rsize*(clst.rsize-1)/2 +1;//(clst.rsize*(clst.rsize-1)/2 +1);
 	bc.bcc=(struct bicluster_component *)calloc(max_num_bicluster,sizeof(struct bicluster_component ));//old and original
 	bc.total_bicluster=0;
 
 	initializeSet();
 
-	// Sending all necessary information to the remaining processes
+	// // Sending all necessary information to the remaining processes
 
-	//mnr and mnc
-	MPI_Bcast(&mnr, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	MPI_Bcast(&mnc, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	// //mnr and mnc
+	// MPI_Bcast(&mnr, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	// MPI_Bcast(&mnc, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-	// clst
-	MPI_Bcast(&(clst.csize), 1, MPI_INT, 0, MPI_COMM_WORLD);
-	MPI_Bcast(&(clst.rsize), 1, MPI_INT, 0, MPI_COMM_WORLD);
+	// // clst
+	// MPI_Bcast(&(clst.csize), 1, MPI_INT, 0, MPI_COMM_WORLD);
+	// MPI_Bcast(&(clst.rsize), 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-	if(rank != 0){
-		clst.matrix = (int **)calloc(clst.rsize, sizeof(int *));
-		for (int t = 0; t < clst.rsize; t++)
-			clst.matrix[t] = (int *)calloc(clst.csize, sizeof(int));
-	}
-	for (int t = 0; t < clst.rsize; t++){
-		MPI_Bcast(clst.matrix[t], clst.csize, MPI_INT, 0, MPI_COMM_WORLD);
-	}
+	// if(rank != 0){
+	// 	clst.matrix = (int **)calloc(clst.rsize, sizeof(int *));
+	// 	for (int t = 0; t < clst.rsize; t++)
+	// 		clst.matrix[t] = (int *)calloc(clst.csize, sizeof(int));
+	// }
+	// for (int t = 0; t < clst.rsize; t++){
+	// 	MPI_Bcast(clst.matrix[t], clst.csize, MPI_INT, 0, MPI_COMM_WORLD);
+	// }
 
-	MPI_Bcast(&(clst.row_col), 1, MPI_INT, 0, MPI_COMM_WORLD);
+	// MPI_Bcast(&(clst.row_col), 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-	if(rank != 0){
-		clst.rw = (struct row *)calloc(clst.rsize, sizeof(struct row));
-		for (int t = 0; t < clst.rsize; t++){
-			clst.rw[t].rg = (struct row_group *)calloc(clst.row_col, sizeof(struct row_group)); 
-		}
-	}
+	// if(rank != 0){
+	// 	clst.rw = (struct row *)calloc(clst.rsize, sizeof(struct row));
+	// 	for (int t = 0; t < clst.rsize; t++){
+	// 		clst.rw[t].rg = (struct row_group *)calloc(clst.row_col, sizeof(struct row_group)); 
+	// 	}
+	// }
 
-	// OVERHEAD: for each row group's value (1 int representing 4 bits), we have to broadcast it independentely as it is wrapped in a struct datatype
-	for (int t = 0; t < clst.rsize; t++){
-		for (int tt = 0; tt < clst.row_col; tt++){
-			MPI_Bcast(&(clst.rw[t].rg[tt].value), 1, MPI_INT, 0, MPI_COMM_WORLD);
-		}
-	}
+	// // OVERHEAD: for each row group's value (1 int representing 4 bits), we have to broadcast it independentely as it is wrapped in a struct datatype
+	// for (int t = 0; t < clst.rsize; t++){
+	// 	for (int tt = 0; tt < clst.row_col; tt++){
+	// 		MPI_Bcast(&(clst.rw[t].rg[tt].value), 1, MPI_INT, 0, MPI_COMM_WORLD);
+	// 	}
+	// }
 
 	if (rank == 0){
 		puts("\n Calling RUBic");
@@ -277,58 +495,31 @@ int main(int argc, char **argv)
 	// Call to RUBIC
 	RUBIC();
 
-	printf("OK RUBIC %d\t Found %d biclusters\n", rank, num_bicluster);
-	// Get total number of biclusters found (may be duplicates) and also synchronize processess
-		if (rank == 0)
-			MPI_Reduce(MPI_IN_PLACE, &num_bicluster, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD); 
-		else 
-			MPI_Reduce(&num_bicluster, NULL, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+	printf("Process %d found %d biclusters\n", rank, num_bicluster);
 
-	fclose(fp5); // Liberate file pointer of each process
-	MPI_Barrier(MPI_COMM_WORLD); // Wait till every process has done so
+	// Gather all biclusters
+	gather_resuls();
 
-	// Concatenate all the biclusters found by each process (partial results stored at fp5 and joined at fp2)
-	if (rank == 0){
-		for (int t = 0; t < nprocs; t++){
-			sprintf(fp5_name, "%s-%d", argv[2], t);
-			fp5 = fopen(fp5_name, "r");
-
-			if (fp5 == NULL){
-				printf("Problem in opening biclusters file of process %d\n",t);
-			}
-
-			fseek(fp5, 0, SEEK_END);
-			long size = ftell(fp5) + 1;
-			rewind(fp5);
-
-			char *buffer = (char*) calloc(size, sizeof(char));
-
-			size_t read_elements = fread(buffer, sizeof(char), size, fp5);
-			buffer[read_elements] = '\n';
-
-			fwrite(buffer, sizeof(char), read_elements + 1, fp2);
-
-			fclose(fp5);
-			remove(fp5_name);
-			free(buffer);
-		}
-	}
-
-	if (rank == 0){
+	if (rank == 0){	
+		// Discard those that wouldn't appear in the original code
+		discard_clusters();
+		// Store those clusters in fp2
+		print_final_biclusters();
+		
 		ftime(&en);
 		
 		// write in output file in pattern 100000010101....
 
 		difftm=(int)(1000*(en.time-st.time)+(en.millitm-st.millitm));
-		printf("\n Total time is %u millisecs\nTotal Biclusters %d  \n",difftm,num_bicluster);
+		printf("\n Total time is %u millisecs\nTotal Biclusters %d\n",difftm,num_bicluster);
 		fprintf(fp2,"\n\n Total time is %u millisecs",difftm);
 		fprintf(fp3,"\n%u,%d",difftm,num_bicluster);
 
-		fclose(fp1);
 		fclose(fp2);
 		fclose(fp3);
 	}
 
+	fclose(fp1);
 	fclose(fp4);
 	remove(fp4_name);
 
@@ -372,6 +563,7 @@ void RUBIC()
 		temp_sum=0;
 		for(j = i+1; j < clst.rsize; j++)
 		{
+			printf("Process %d - i,j = %d,%d\n", rank, i+1, j+1);
 		    temp_sum=0;
 			nonzero_component_num=0;
 			for(k=0;k<clst.row_col;k++)// number of column for each row in decimal value not binary
@@ -459,6 +651,11 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 
 	rewind(fp4);
 
+	printf("Template of Process %d - t = ",rank);
+	for (int i = 0; i < pattern.bcc[0].col_total; i++)
+		printf("%d ",pattern.bcc[0].column_number[i]+1);
+	printf("\n");
+
 	while(fgets(s,4000,fp4)!=NULL)
 	{
 
@@ -485,6 +682,7 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 
 		if(found_component==tsize)
 		{
+			printf("Discarded by template: %s\n",s);
 			return(1); //template found
 		}
 
@@ -629,6 +827,13 @@ int search(int r,int j,int *t) //
 
 		bc.bcc[bc.total_bicluster].row_number[0]=r; // As by for row no. r and j (AND of r and j row gives template) we have worked to find bicluster
 		bc.bcc[bc.total_bicluster].row_number[1]=j;
+
+		bc.bcc[bc.total_bicluster].row_pair1 = r;
+		bc.bcc[bc.total_bicluster].row_pair2 = j;
+
+		bc.bcc[bc.total_bicluster].rank = rank;
+		bc.bcc[bc.total_bicluster].discarded = 0;
+
 		for(i=0;i<selected_row_total;i++)
 		{
 			bc.bcc[bc.total_bicluster].row_number[i+2]=selected_row[i];
@@ -646,7 +851,7 @@ int search(int r,int j,int *t) //
 
 	printBicluster();
 	
-	free(bc.bcc[--bc.total_bicluster].row_number);
+	// free(bc.bcc[--bc.total_bicluster].row_number);
 	free(selected_row);
 	return (1); //valid cluster
 
@@ -661,23 +866,23 @@ void printBicluster()
 { 
 	int i,j;
 
-        fprintf(fp5,"\n bc#: %d.%d", rank, num_bicluster); // Include rank in bicluster id
-		fprintf(fp5,"\n c: ");
+        // fprintf(fp5,"\n bc#: %d.%d", rank, num_bicluster); // Include rank in bicluster id
+		// fprintf(fp5,"\n c: ");
 		fprintf(fp4," ");
 
 		for(j=0;j<bc.bcc[bc.total_bicluster-1].col_total;j++)
 		{
 			{
-				fprintf(fp5,"%d ",bc.bcc[bc.total_bicluster-1].column_number[j]+1); // print start from 1 not 0
+				// fprintf(fp5,"%d ",bc.bcc[bc.total_bicluster-1].column_number[j]+1); // print start from 1 not 0
 				fprintf(fp4,"%d ",bc.bcc[bc.total_bicluster-1].column_number[j]+1);
 			}
 		}
-		fprintf(fp5,"\n r: ");
+		// fprintf(fp5,"\n r: ");
 		for(j=0;j<bc.bcc[bc.total_bicluster-1].row_total;j++)
 		{
-			fprintf(fp5,"%d ",bc.bcc[bc.total_bicluster-1].row_number[j]+1);
+			// fprintf(fp5,"%d ",bc.bcc[bc.total_bicluster-1].row_number[j]+1);
 		}// end for j
-		fprintf(fp5,"\n Total col=%d, Total row=%d",bc.bcc[bc.total_bicluster-1].col_total,bc.bcc[bc.total_bicluster-1].row_total);
+		// fprintf(fp5,"\n Total col=%d, Total row=%d",bc.bcc[bc.total_bicluster-1].col_total,bc.bcc[bc.total_bicluster-1].row_total);
 
 		fprintf(fp4,"\n");
 

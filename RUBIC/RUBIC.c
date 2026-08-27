@@ -246,6 +246,7 @@ void RUBIC()
 		temp_sum=0;
 		for(j=i+1;j<clst.rsize;j++)
 		{
+			printf("i,j = %d,%d\n",i+1,j+1);
 
 		    temp_sum=0;
 			nonzero_component_num=0;
@@ -335,7 +336,6 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 
 	while(fgets(s,4000,fp4)!=NULL)
 	{
-
 		found_component=0;
 
 	//	printf("\n  found_component=%d tsize=%d",found_component,tsize);
@@ -359,11 +359,17 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 
 		if(found_component==tsize)
 		{
+			printf("Template already found: tsize = %d: found_component = %d: in fp4: %s\t\tin code:",tsize,found_component,s);
+			for (k = 0; k<pattern.bcc[0].col_total; k++) printf(" %d",pattern.bcc[0].column_number[k]+1);
+			printf("\n");
 			return(1); //template found
 		}
 
 	}
 
+	printf("New template found: tsize = %d, found_component= %d; in code:", tsize,found_component);
+	for (k = 0; k<pattern.bcc[0].col_total; k++) printf(" %d",pattern.bcc[0].column_number[k]+1);
+	printf("\n");
 	free(s);
 	free(pattern.bcc);
 	return(0); // found false  template not found and got new template

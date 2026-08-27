@@ -28,4 +28,4 @@ if [ ! -x "$program_name" ]; then
 fi
 
 # Execute the program with the remaining arguments (4 processes)
-mpirun -n 4 "$program_name" "$@"
+mpirun -n 1 "$program_name" "$@"
