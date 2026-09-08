@@ -51,5 +51,3 @@
  c: 4 8 
  r: 8 10 
  Total col=2, Total row=2
-
- Total time is 1 millisecs

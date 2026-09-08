@@ -1,10 +1,10 @@
+#define _GNU_SOURCE
+
 #include<stdio.h>
 #include<stdlib.h>
 #include<math.h>
 #include<malloc.h>
 #include<string.h>
-#include<time.h>
-#include<sys/timeb.h>
 
 #include <mpi.h>
 
@@ -67,7 +67,7 @@ struct bicluster bc;
 struct value v[16];
 int templ_num=0,**templ; // to templ means rho
 FILE *fp2,*fp4,*fp5;
-int mnr,mnc,num_bicluster=0;
+int mnr,mnc,num_bicluster=0, num_discarded=0;
 int nprocs, rank; // MPI related variables
 
 
@@ -256,10 +256,12 @@ void discard_clusters(){
 
 			// Lazy disarding
 			if (found_component == tsize){
-				printf("Discarded template: ");
-				for (int z = 0; z < bc.bcc[i].col_total; z++) printf("%d ",bc.bcc[i].column_number[z]);
-				printf("\n");
+				// printf("Discarded template: ");
+				// for (int z = 0; z < bc.bcc[i].col_total; z++) printf("%d ",bc.bcc[i].column_number[z]);
+				// printf("\n");
 				bc.bcc[i].discarded = 1;
+				num_discarded++;
+				break;
 			}
 
 		}
@@ -286,7 +288,6 @@ void print_final_biclusters(){
 		fprintf(fp2,"\n Total col=%d, Total row=%d",bc.bcc[i].col_total,bc.bcc[i].row_total);
 	}
 }
-
 
 //----------------------------
 // Converts one int to string format according to a base
@@ -333,18 +334,24 @@ int main(int argc, char **argv)
 	if (rank == 0){
 		printf("Running pararell RUBIC with %d processes\n", nprocs);
 	}
-
 	char s[1000000],s1[10],*s2,fname[200],fname1[400];
 	//FILE *fp1,*fp2,*fp3;
 	FILE *fp1,*fp3;
 	long int i,j,k;   //,**matrix;
-	time_t start,end;
-	struct timeb st,en;
-	int difftm,ccnt;// ccnt and rcnt stands for no. fo clumn and no. of row which are 1
+	int ccnt;// ccnt and rcnt stands for no. fo clumn and no. of row which are 1
 	float a,threshold;
 	int max_num_bicluster,extra_col=0;
 	char fp4_name[25]; // One file per process for templates
+	// Time metrics
+	double total_st,total_en, read_st,read_en, comp_st,comp_en, comm_st,comm_en, disc_st,disc_en, write_st,write_en;
+	double total_time, read_time, comp_time, comm_time, disc_time, write_time;
+	double *read_times, *comp_times, *comm_times;
 
+
+	//READING AND INITIALIZATIONS
+	if (rank == 0)
+		total_st = read_st = MPI_Wtime();
+	
 	// Each process gets a separate file for storing its biclusters and templates
 	sprintf(fp4_name, "./op_template-%d.txt",rank);
 	fp4=fopen(fp4_name,"w+");
@@ -363,11 +370,11 @@ int main(int argc, char **argv)
 		fprintf(fp2," 1st line shows Bicluster number 'bc#:', 2nd line shows column number 'c:', 3rd line shows row number 'r:' and so on ....");
 	
 	
-		fp3=fopen("./Execution_Result_Pararell.txt","a");
-		if(fp3==NULL)
-			puts("Problem in opening fp3 output file");
-		else
-			puts("OK for opening fp3 output file");
+		// fp3=fopen("./Execution_Result_Pararell.txt","a");
+		// if(fp3==NULL)
+		// 	puts("Problem in opening fp3 output file");
+		// else
+		// 	puts("OK for opening fp3 output file");
 	}	
 
 	// Input parameters and file used by all processes
@@ -376,7 +383,7 @@ int main(int argc, char **argv)
 	if(fp1==NULL)
 		printf("Problem in opening input file at process %d\n", rank);
 	else
-		printf("OK for opening new_input file by process %d\n",rank);
+		printf("OK for opening input file by process %d\n",rank);
 
 	mnr=atoi(argv[3]);
 	mnc=atoi(argv[4]);
@@ -452,77 +459,101 @@ int main(int argc, char **argv)
 
 	initializeSet();
 
-	// // Sending all necessary information to the remaining processes
+	read_en = MPI_Wtime();
 
-	// //mnr and mnc
-	// MPI_Bcast(&mnr, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	// MPI_Bcast(&mnc, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-	// // clst
-	// MPI_Bcast(&(clst.csize), 1, MPI_INT, 0, MPI_COMM_WORLD);
-	// MPI_Bcast(&(clst.rsize), 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-	// if(rank != 0){
-	// 	clst.matrix = (int **)calloc(clst.rsize, sizeof(int *));
-	// 	for (int t = 0; t < clst.rsize; t++)
-	// 		clst.matrix[t] = (int *)calloc(clst.csize, sizeof(int));
-	// }
-	// for (int t = 0; t < clst.rsize; t++){
-	// 	MPI_Bcast(clst.matrix[t], clst.csize, MPI_INT, 0, MPI_COMM_WORLD);
-	// }
-
-	// MPI_Bcast(&(clst.row_col), 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-	// if(rank != 0){
-	// 	clst.rw = (struct row *)calloc(clst.rsize, sizeof(struct row));
-	// 	for (int t = 0; t < clst.rsize; t++){
-	// 		clst.rw[t].rg = (struct row_group *)calloc(clst.row_col, sizeof(struct row_group)); 
-	// 	}
-	// }
-
-	// // OVERHEAD: for each row group's value (1 int representing 4 bits), we have to broadcast it independentely as it is wrapped in a struct datatype
-	// for (int t = 0; t < clst.rsize; t++){
-	// 	for (int tt = 0; tt < clst.row_col; tt++){
-	// 		MPI_Bcast(&(clst.rw[t].rg[tt].value), 1, MPI_INT, 0, MPI_COMM_WORLD);
-	// 	}
-	// }
-
+	// COMPUTATION (Call to RUBIC)
+	comp_st = MPI_Wtime();
 	if (rank == 0){
 		puts("\n Calling RUBic");
-		ftime(&st);
 	}
-
-	// Call to RUBIC
 	RUBIC();
+	comp_en = MPI_Wtime();
 
 	printf("Process %d found %d biclusters\n", rank, num_bicluster);
 
-	// Gather all biclusters
+	// COMMUNICATIONS (Gather all biclusters)
+	comm_st = MPI_Wtime();
 	gather_resuls();
+	comm_en = MPI_Wtime();
 
 	if (rank == 0){	
-		// Discard those that wouldn't appear in the original code
+		// DISCARD (those that wouldn't appear in the original code)
+		disc_st = MPI_Wtime();
 		discard_clusters();
-		// Store those clusters in fp2
-		print_final_biclusters();
-		
-		ftime(&en);
-		
-		// write in output file in pattern 100000010101....
+		disc_en = MPI_Wtime();
 
-		difftm=(int)(1000*(en.time-st.time)+(en.millitm-st.millitm));
-		printf("\n Total time is %u millisecs\nTotal Biclusters %d\n",difftm,num_bicluster);
-		fprintf(fp2,"\n\n Total time is %u millisecs",difftm);
-		fprintf(fp3,"\n%u,%d",difftm,num_bicluster);
+		// WRITE (Store those clusters in fp2)
+		write_st = MPI_Wtime();
+		print_final_biclusters();
+		write_en = MPI_Wtime();
+
+		// write in output file in pattern 100000010101....
+		// printf("\n Total time is %u millisecs\nTotal Biclusters %d\n",difftm,num_bicluster);
+		// fprintf(fp2,"\n\n Total time is %u millisecs",difftm);
+		// fprintf(fp3,"\n%u,%d",difftm,num_bicluster);
 
 		fclose(fp2);
-		fclose(fp3);
+		// fclose(fp3);
 	}
 
 	fclose(fp1);
 	fclose(fp4);
 	remove(fp4_name);
+	
+	if (rank == 0)
+		total_en = MPI_Wtime();
 
+	// Obtain final results
+	read_time = read_en - read_st;
+	comp_time = comp_en - comp_st;
+	comm_time = comm_en - comm_st;
+	if (rank == 0){
+		disc_time = disc_en - disc_st;
+		write_time = write_en - write_st;
+		total_time = total_en - total_st;
+		
+		read_times = (double*) malloc(sizeof(double) * nprocs);
+		comp_times = (double*) malloc(sizeof(double) * nprocs);
+		comm_times = (double*) malloc(sizeof(double) * nprocs);
+	}
+
+	MPI_Gather(&read_time, 1, MPI_DOUBLE, read_times, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+	MPI_Gather(&comp_time, 1, MPI_DOUBLE, comp_times, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+	MPI_Gather(&comm_time, 1, MPI_DOUBLE, comm_times, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+	// Show final results
+	if (rank == 0){
+		printf("\n\nFINAL RESULTS\n\n");
+		printf("Found a total of %d biclusters. Discarded %d of those\n\n", num_bicluster, num_discarded);
+		printf("Table of times (in seconds):\n\n");
+
+		printf("%15s","Process");
+		for(int t = 0; t < nprocs; t++)
+			printf("%15d", t);
+		
+		printf("\n%15s", "Read");
+		for (int t = 0; t < nprocs; t++){
+			printf("%15.2f", read_times[t]);
+		}
+
+		printf("\n%15s", "Computation");
+		for (int t = 0; t < nprocs; t++){
+			printf("%15.2f", comp_times[t]);
+		}
+
+		printf("\n%15s", "Communication");
+		for (int t = 0; t < nprocs; t++){
+			printf("%15.2f", comm_times[t]);
+		}
+
+		printf("\n%15s", "Discard");
+		printf("%15.2f", disc_time);
+
+		printf("\n%15s", "Write");
+		printf("%15.2f", write_time);
+
+		printf("\n\n Total time (latency) = %.2f seconds", total_time);
+	}
 	MPI_Finalize();
 }
 
@@ -563,7 +594,7 @@ void RUBIC()
 		temp_sum=0;
 		for(j = i+1; j < clst.rsize; j++)
 		{
-			printf("Process %d - i,j = %d,%d\n", rank, i+1, j+1);
+			// printf("Process %d - i,j = %d,%d\n", rank, i+1, j+1);
 		    temp_sum=0;
 			nonzero_component_num=0;
 			for(k=0;k<clst.row_col;k++)// number of column for each row in decimal value not binary
@@ -651,10 +682,10 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 
 	rewind(fp4);
 
-	printf("Template of Process %d - t = ",rank);
-	for (int i = 0; i < pattern.bcc[0].col_total; i++)
-		printf("%d ",pattern.bcc[0].column_number[i]+1);
-	printf("\n");
+	// printf("Template of Process %d - t = ",rank);
+	// for (int i = 0; i < pattern.bcc[0].col_total; i++)
+	// 	printf("%d ",pattern.bcc[0].column_number[i]+1);
+	// printf("\n");
 
 	while(fgets(s,4000,fp4)!=NULL)
 	{
@@ -682,7 +713,7 @@ int templateFound_inFile(int *t, int tsize)               //,char *temp_s)
 
 		if(found_component==tsize)
 		{
-			printf("Discarded by template: %s\n",s);
+			// printf("Discarded (tsize = %d) by template: %s\n",tsize,s);
 			return(1); //template found
 		}
 
