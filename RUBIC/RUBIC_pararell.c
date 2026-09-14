@@ -70,8 +70,11 @@ int nprocs, rank; // MPI related variables
 
 
 //----------------------------
-// Makes process 0 receive all the clusters found
+// Makes all processes receive all the clusters found
 void gather_resuls(){
+	// If only one process was used, no need for communications
+	if (nprocs == 1) return;
+
 	// All processes flatten their clusters into one buffer.
 	int local_bytes = 0;
 
@@ -103,72 +106,73 @@ void gather_resuls(){
 		ptr += bc.bcc[i].col_total * sizeof(int);
 	}
 
-	// Process 0 obtains how many clusters each process will send and calculates the offsets betweeen each processes' buffer
+	// All processes obtain how many clusters each process will send and calculates the offsets betweeen each processes' buffer
 	int* recv_bytes;
 	int* offsets;
 	unsigned char* global_buffer;
 	int total_bytes = 0;
 
-	if (rank == 0)
-		recv_bytes = (int*) malloc(nprocs * sizeof(int));
+	// if (rank == 0)
+	recv_bytes = (int*) malloc(nprocs * sizeof(int));
 
-	MPI_Gather(&local_bytes, 1, MPI_INT, recv_bytes, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Allgather(&local_bytes, 1, MPI_INT, recv_bytes, 1, MPI_INT, MPI_COMM_WORLD);
 
-	if (rank == 0){
-		offsets = (int*) malloc(nprocs * sizeof(int));
-		for (int i = 0; i < nprocs; i++){
-			offsets[i] = total_bytes;
-			total_bytes += recv_bytes[i];
-		}
-		
-		global_buffer = (unsigned char*) malloc(total_bytes);
-		ptr = global_buffer;
+	//if (rank == 0){
+	offsets = (int*) malloc(nprocs * sizeof(int));
+	for (int i = 0; i < nprocs; i++){
+		offsets[i] = total_bytes;
+		total_bytes += recv_bytes[i];
 	}
+	
+	global_buffer = (unsigned char*) malloc(total_bytes);
+	ptr = global_buffer;
+	//}
 
-	// All processes send their buffer to process 0
-	MPI_Gatherv(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, 0, MPI_COMM_WORLD);
+	// All processes send their buffer to each other
+	MPI_Allgatherv(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, MPI_COMM_WORLD);
 
-	// Get total number of biclusters (structs) received
-	if (rank == 0)
-		MPI_Reduce(MPI_IN_PLACE, &num_bicluster, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD); 
-	else 
-		MPI_Reduce(&num_bicluster, NULL, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+	// All processes get total number of biclusters (structs) received
+	MPI_Allreduce(MPI_IN_PLACE, &num_bicluster, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+	// if (rank == 0)
+	// 	MPI_Reduce(MPI_IN_PLACE, &num_bicluster, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD); 
+	// else 
+	// 	MPI_Reduce(&num_bicluster, NULL, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
-	// Process 0 frees its previous bc structure and replaces it by the deserialized global buffer
-	if (rank == 0){
-		for (int i = 0; i < bc.total_bicluster; i++){
-			free(bc.bcc[i].row_number);
-			free(bc.bcc[i].column_number);
-		}
-		free(bc.bcc);
+	// All processes free their previous bc structure and replace it by the deserialized global buffer
+	//if (rank == 0){
+	for (int i = 0; i < bc.total_bicluster; i++){
+		free(bc.bcc[i].row_number);
+		free(bc.bcc[i].column_number);
+	}
+	free(bc.bcc);
 
-		bc.total_bicluster = num_bicluster;
-		bc.bcc = (struct bicluster_component*) calloc(bc.total_bicluster, sizeof(struct bicluster_component));
+	bc.total_bicluster = num_bicluster;
+	bc.bcc = (struct bicluster_component*) calloc(bc.total_bicluster, sizeof(struct bicluster_component));
 
-		for (int i = 0; i < bc.total_bicluster; i++){
-			//Single integers
-			memcpy(&bc.bcc[i].rank, ptr, sizeof(int));
-			ptr += sizeof(int);
-			memcpy(&bc.bcc[i].discarded, ptr, sizeof(int));
-			ptr += sizeof(int);
-			memcpy(&bc.bcc[i].row_pair1, ptr, sizeof(int));
-			ptr += sizeof(int);
-			memcpy(&bc.bcc[i].row_pair2, ptr, sizeof(int));
-			ptr += sizeof(int);
-			memcpy(&bc.bcc[i].row_total, ptr, sizeof(int));
-			ptr += sizeof(int);
-			memcpy(&bc.bcc[i].col_total, ptr, sizeof(int));
-			ptr += sizeof(int);
+	for (int i = 0; i < bc.total_bicluster; i++){
+		//Single integers
+		memcpy(&bc.bcc[i].rank, ptr, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(&bc.bcc[i].discarded, ptr, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(&bc.bcc[i].row_pair1, ptr, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(&bc.bcc[i].row_pair2, ptr, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(&bc.bcc[i].row_total, ptr, sizeof(int));
+		ptr += sizeof(int);
+		memcpy(&bc.bcc[i].col_total, ptr, sizeof(int));
+		ptr += sizeof(int);
 
-			//Arrays
-			bc.bcc[i].row_number = (int*) calloc(bc.bcc[i].row_total, sizeof(int));
-			bc.bcc[i].column_number = (int*) calloc(bc.bcc[i].col_total, sizeof(int));
+		//Arrays
+		bc.bcc[i].row_number = (int*) calloc(bc.bcc[i].row_total, sizeof(int));
+		bc.bcc[i].column_number = (int*) calloc(bc.bcc[i].col_total, sizeof(int));
 
-			memcpy(bc.bcc[i].row_number, ptr, bc.bcc[i].row_total * sizeof(int));
-			ptr += bc.bcc[i].row_total * sizeof(int);
-			memcpy(bc.bcc[i].column_number, ptr, bc.bcc[i].col_total * sizeof(int));
-			ptr += bc.bcc[i].col_total * sizeof(int);
-		}
+		memcpy(bc.bcc[i].row_number, ptr, bc.bcc[i].row_total * sizeof(int));
+		ptr += bc.bcc[i].row_total * sizeof(int);
+		memcpy(bc.bcc[i].column_number, ptr, bc.bcc[i].col_total * sizeof(int));
+		ptr += bc.bcc[i].col_total * sizeof(int);
+	}
 		// puts("Final result:");
 		// for (int i = 0; i< bc.total_bicluster; i++){
 		// 	printf("%d - rank=%d - discarded=%d - row_pair1=%d - row_pair2=%d - row_total=%d - col_total=%d\n",i, bc.bcc[i].rank, bc.bcc[i].discarded, bc.bcc[i].row_pair1, bc.bcc[i].row_pair2,bc.bcc[i].row_total, bc.bcc[i].col_total);
@@ -178,16 +182,15 @@ void gather_resuls(){
 		// 	for (int j = 0; j < bc.bcc[i].col_total; j++) printf("%d ", bc.bcc[i].column_number[j]);
 		// 	printf("\n");
 		// }
-	}
+	//}
 
 	// Free memory
 	free(local_buffer);
-	if (rank == 0){
-		free(global_buffer);
-		free(recv_bytes);
-		free(offsets);
-	}
-
+	//if (rank == 0){
+	free(global_buffer);
+	free(recv_bytes);
+	free(offsets);
+	//}
 }
 
 //----------------------------
@@ -203,11 +206,14 @@ int sequential_order(const void *a, const void *b){
 }
 
 //----------------------------
-// Algorithm that makes process 0 discard those clusters that wouldn't appear in the original code (sequential)
+// Algorithm that makes all processes (pararell) discard those clusters that wouldn't appear in the original code (sequential)
+// Then only process 0 gets to know the global result of this process
 void discard_clusters(){
 	if (nprocs == 1) return;
 
 	int i, j, k, t, curr_div, last_div, tsize, found_component;
+	int clst_per_proc, start_i, end_i; //Used for dividing discarding worload.
+
 	// bc.bcc[i] represents the template that would enter templateFoundInFile
 	// bc.bcc[j] represents a template that would hypothetically appear in fp4
 
@@ -216,8 +222,13 @@ void discard_clusters(){
 
 	qsort(bc.bcc, bc.total_bicluster, sizeof(struct bicluster_component), sequential_order);
 
+	// Each process obtains the range of clusteres bc.bcc[i] it needs to check wether to discard or not
+	clst_per_proc = num_bicluster / nprocs;
+	start_i = rank * clst_per_proc;
+	end_i = (rank == nprocs-1)? num_bicluster : (rank+1) * clst_per_proc;
+
 	// Now we start the discarding process
-	for (i = 0; i < bc.total_bicluster; i++){
+	for (i = start_i; i < end_i; i++){
 		for (j = 0; j < i; j++){
 			// Skip if clusters were generated by the same process or if the "template" cluster has been discarded
 			if (bc.bcc[i].rank == bc.bcc[j].rank || bc.bcc[j].discarded) 
@@ -230,7 +241,7 @@ void discard_clusters(){
 
 			// Obtain tsize considering the template (columns) in hexadecimal
 			// Since a group of rows that give the same division by 4 would be part of the same
-			// digit and the rows in bc.bcc[i].column_number are ordered, we can use this approach
+			// digit in hexadecimal and the rows in bc.bcc[i].column_number are ordered, we can use this approach
 			tsize = 0;
 			last_div = -1;
 			for (k = 0; k < bc.bcc[i].col_total; k++){
@@ -263,6 +274,57 @@ void discard_clusters(){
 			}
 
 		}
+	}
+
+	// Now process 0 has to get the global result of this process
+	int *indices_local, *indices_global, n_indices_local , n_indices_global, *n_indices_local_arr, *offsets; 
+
+	// Obtain indices of those clusters that must be discarded
+	n_indices_local = num_discarded;
+	indices_local = (int*) malloc(n_indices_local * sizeof(int));
+	for (i = start_i, j = 0; i < end_i; i++){
+		if (bc.bcc[i].discarded)
+			indices_local[j++] = i;
+	}
+
+	// Obtain necesary sizes and offsets to perform the gathering
+	if (rank == 0){
+		n_indices_local_arr = (int*) malloc(nprocs * sizeof(int));
+		offsets = (int*) malloc(nprocs * sizeof(int));
+	}
+
+	MPI_Gather(&n_indices_local, 1, MPI_INT, n_indices_local_arr, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+	if (rank == 0){
+		offsets[0] = 0;
+		for (j = 1; j < nprocs; j++){
+			offsets[j] = offsets[j-1] + n_indices_local_arr[j-1];
+		}
+	}
+
+	MPI_Reduce(&n_indices_local, &n_indices_global, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+	
+	if (rank == 0)
+		indices_global = (int*) malloc(n_indices_global * sizeof(int));
+
+	// Send indices to process 0
+	MPI_Gatherv(indices_local, n_indices_local, MPI_INT, indices_global, n_indices_local_arr, offsets, MPI_INT, 0, MPI_COMM_WORLD);
+	
+	//Now process 0 has to set as discarded those clusters at the received indices.
+	if (rank == 0){
+		for (j = 0; j < n_indices_global; j++){
+			bc.bcc[indices_global[j]].discarded = 1;
+		}
+		
+		num_discarded = n_indices_global;
+	}
+
+	//Free temporary memory
+	free(indices_local);
+	if (rank == 0){
+		free(indices_global);
+		free(n_indices_local_arr);
+		free(offsets);
 	}
 }
 
@@ -343,7 +405,7 @@ int main(int argc, char **argv)
 	// Time metrics
 	double total_st,total_en, read_st,read_en, comp_st,comp_en, comm_st,comm_en, disc_st,disc_en, write_st,write_en;
 	double total_time, read_time, comp_time, comm_time, disc_time, write_time;
-	double *read_times, *comp_times, *comm_times;
+	double *read_times, *comp_times, *comm_times, *disc_times;
 
 
 	//READING AND INITIALIZATIONS
@@ -473,13 +535,13 @@ int main(int argc, char **argv)
 	comm_st = MPI_Wtime();
 	gather_resuls();
 	comm_en = MPI_Wtime();
+	
+	// DISCARD (those that wouldn't appear in the original code)
+	disc_st = MPI_Wtime();
+	discard_clusters();
+	disc_en = MPI_Wtime();
 
 	if (rank == 0){	
-		// DISCARD (those that wouldn't appear in the original code)
-		disc_st = MPI_Wtime();
-		discard_clusters();
-		disc_en = MPI_Wtime();
-
 		// WRITE (Store those clusters in fp2)
 		write_st = MPI_Wtime();
 		print_final_biclusters();
@@ -505,19 +567,21 @@ int main(int argc, char **argv)
 	read_time = read_en - read_st;
 	comp_time = comp_en - comp_st;
 	comm_time = comm_en - comm_st;
+	disc_time = disc_en - disc_st;
 	if (rank == 0){
-		disc_time = disc_en - disc_st;
 		write_time = write_en - write_st;
 		total_time = total_en - total_st;
 		
 		read_times = (double*) malloc(sizeof(double) * nprocs);
 		comp_times = (double*) malloc(sizeof(double) * nprocs);
 		comm_times = (double*) malloc(sizeof(double) * nprocs);
+		disc_times = (double*) malloc(sizeof(double) * nprocs);
 	}
 
 	MPI_Gather(&read_time, 1, MPI_DOUBLE, read_times, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	MPI_Gather(&comp_time, 1, MPI_DOUBLE, comp_times, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	MPI_Gather(&comm_time, 1, MPI_DOUBLE, comm_times, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+	MPI_Gather(&disc_time, 1, MPI_DOUBLE, disc_times, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
 	// Show final results
 	if (rank == 0){
@@ -545,8 +609,9 @@ int main(int argc, char **argv)
 		}
 
 		printf("\n%15s", "Discard");
-		printf("%15.2f", disc_time);
-
+		for (int t = 0; t < nprocs; t++){
+			printf("%15.2f", disc_times[t]);
+		}
 		printf("\n%15s", "Write");
 		printf("%15.2f", write_time);
 
