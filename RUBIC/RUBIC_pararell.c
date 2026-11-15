@@ -68,6 +68,110 @@ FILE *fp2,*fp4,*fp5;
 int mnr,mnc,num_bicluster=0, num_discarded=0;
 int nprocs, rank; // MPI related variables
 
+//----------------------------
+// Mimics the MPI_gatherv behaviour with send/recv communications
+int gatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype, void *recvbuf, const int recvcounts[],
+			const int displs[], MPI_Datatype recvtype, int root, MPI_Comm comm){
+
+	int numprocs, id;
+	MPI_Comm_size(comm, &numprocs);
+    MPI_Comm_rank(comm, &id);
+
+	for (int i = 0; i < numprocs; i++){
+		if (i == root){
+			if (id == root)
+				memcpy(recvbuf + displs[i], sendbuf, sendcount);
+		}
+		else{
+			if (id == root)
+				MPI_Recv(recvbuf + displs[i], recvcounts[i], recvtype, i, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
+			else if (id == i)
+				MPI_Send(sendbuf, sendcount, sendtype, root, 0, comm);
+		}
+	}
+
+	return 0;
+}
+
+
+//----------------------------
+// Mimics the MPI_Agatherv behaviour with alternative gatherv / broadcast communications
+int allGatherv1(const void *sendbuf, int sendcount, MPI_Datatype sendtype, void *recvbuf, const int recvcounts[],
+				const int displs[], MPI_Datatype recvtype, MPI_Comm comm){
+	int nprocs;
+	MPI_Comm_size(comm, &nprocs);
+
+	// Gatherv with an arbitrary root processs (p.eg: 0)
+	gatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, displs, recvtype, 0, comm);
+
+	// Perform broadcast of previous root process' gathered data
+	int size = 0;
+	for (int i = 0; i<nprocs; i++){
+		size += recvcounts[i];
+	}
+	MPI_Bcast(recvbuf, size, recvtype, 0, comm);
+	
+	return 0;
+}
+
+
+
+//----------------------------
+// Mimics the MPI_Agatherv behaviour with point to point (send/recv) communications
+int allGatherv2(const void *sendbuf, int sendcount, MPI_Datatype sendtype, void *recvbuf, const int recvcounts[],
+				const int displs[], MPI_Datatype recvtype, MPI_Comm comm){
+	int numprocs, id;
+	MPI_Comm_size(comm, &numprocs);
+    MPI_Comm_rank(comm, &id);
+
+	// Iterate for each possible root process and do the same procedure as in gatherv
+	for(int root = 0; root < numprocs; root++){
+		for (int i = 0; i < numprocs; i++){
+			if (i == root){
+				if (id == root)
+					memcpy(recvbuf + displs[i], sendbuf, sendcount);
+			}
+			else{
+				if (id == root)
+					MPI_Recv(recvbuf + displs[i], recvcounts[i], recvtype, i, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
+				else if (id == i)
+					MPI_Send(sendbuf, sendcount, sendtype, root, 0, comm);
+			}
+		}
+	}
+	
+	return 0;
+}
+
+//----------------------------
+// Mimics the MPI_Agatherv behaviour with point to point non-blocking (Isend/Irecv) communications
+int allGatherv3(const void *sendbuf, int sendcount, MPI_Datatype sendtype, void *recvbuf, const int recvcounts[],
+				const int displs[], MPI_Datatype recvtype, MPI_Comm comm){
+	int numprocs, id;
+	MPI_Comm_size(comm, &numprocs);
+    MPI_Comm_rank(comm, &id);
+
+	MPI_Request requests[2 * numprocs];
+	int nrequests = 0;
+
+	memcpy(recvbuf + displs[id], sendbuf, sendcount);
+
+	// All processes request data from the rest
+	for(int i = 0; i < numprocs; i++){
+		if (i != id)
+			MPI_Irecv(recvbuf + displs[i], recvcounts[i], recvtype, i, 0, comm, &requests[nrequests++] );
+	}
+
+	// ALl processes send data to the rest
+	for(int i = 0; i < numprocs; i++){
+		if (i != id)
+			MPI_Isend(sendbuf, sendcount, sendtype, i, 0, comm, &requests[nrequests++]);
+	}
+
+	MPI_Waitall(nrequests, requests, MPI_STATUSES_IGNORE);
+
+	return 0;
+}
 
 //----------------------------
 // Makes all processes receive all the clusters found
@@ -129,7 +233,10 @@ void gather_resuls(){
 	//}
 
 	// All processes send their buffer to each other
-	MPI_Allgatherv(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, MPI_COMM_WORLD);
+	// MPI_Allgatherv(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, MPI_COMM_WORLD);
+	// allGatherv1(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, MPI_COMM_WORLD);
+	// allGatherv2(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, MPI_COMM_WORLD);
+	allGatherv3(local_buffer, local_bytes, MPI_BYTE, global_buffer, recv_bytes, offsets, MPI_BYTE, MPI_COMM_WORLD);
 
 	// All processes get total number of biclusters (structs) received
 	MPI_Allreduce(MPI_IN_PLACE, &num_bicluster, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
